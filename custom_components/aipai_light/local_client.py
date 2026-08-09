@@ -49,12 +49,14 @@ class AipaiLocalClient:
         ip: str,
         on_message: Callable[[dict[str, Any]], None],
         on_connection_change: Callable[[bool], None] | None = None,
+        on_ip_changed: Callable[[str], None] | None = None,
     ) -> None:
         self._hass = hass
         self._serial = serial
         self._ip = ip
         self._on_message = on_message
         self._on_conn = on_connection_change
+        self._on_ip = on_ip_changed
 
     @property
     def ip(self) -> str:
@@ -146,6 +148,8 @@ class AipaiLocalClient:
         if ip and ip != self._ip:
             _LOGGER.info("Light %s moved to %s (was %s)", self._serial, ip, self._ip)
             self._ip = ip
+            if self._on_ip:
+                self._on_ip(ip)   # cache it so the next startup skips the scan
             return True
         return ip is not None
 

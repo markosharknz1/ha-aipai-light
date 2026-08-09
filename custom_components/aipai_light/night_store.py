@@ -33,14 +33,18 @@ class NightStore:
         self._store: Store = Store(hass, _STORE_VERSION, _STORE_KEY)
         self._night: dict[str, dict[str, Any]] = {}
         self._day: dict[str, list[list[int]]] = {}
+        self._ip: dict[str, str] = {}   # last-known LAN IP per serial (local mode)
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
         self._night = data.get("night", {})
         self._day = data.get("day", {})
+        self._ip = data.get("ip", {})
 
     async def _async_write(self) -> None:
-        await self._store.async_save({"night": self._night, "day": self._day})
+        await self._store.async_save(
+            {"night": self._night, "day": self._day, "ip": self._ip}
+        )
 
     def get_night(self, serial: str) -> dict[str, Any] | None:
         return self._night.get(str(serial))
@@ -59,6 +63,14 @@ class NightStore:
     async def async_set_day(self, serial: str, curves: list[list[int]]) -> None:
         self._day[str(serial)] = [list(c) for c in curves]
         await self._async_write()
+
+    def get_ip(self, serial: str) -> str | None:
+        return self._ip.get(str(serial))
+
+    async def async_set_ip(self, serial: str, ip: str) -> None:
+        if self._ip.get(str(serial)) != ip:
+            self._ip[str(serial)] = ip
+            await self._async_write()
 
 
 async def async_get_night_store(hass: HomeAssistant) -> NightStore:

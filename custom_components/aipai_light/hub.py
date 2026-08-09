@@ -81,6 +81,7 @@ class AipaiLightHub:
                 hass, serial, local_ip,
                 on_message=self._handle_message,
                 on_connection_change=self._handle_connection_change,
+                on_ip_changed=self._persist_ip,
             )
         else:
             self.client = AipaiMqttClient(
@@ -520,6 +521,11 @@ class AipaiLightHub:
             self.hass.async_create_task(
                 self._night_store.async_set_day(self.serial, self.day_curves)
             )
+
+    def _persist_ip(self, ip: str) -> None:
+        """Remember a local light's IP so the next startup skips the subnet scan."""
+        if self._night_store is not None:
+            self.hass.async_create_task(self._night_store.async_set_ip(self.serial, ip))
 
     def _device_rows(self) -> list[list[int]]:
         """Current on-device curves as int rows (per firmware road)."""

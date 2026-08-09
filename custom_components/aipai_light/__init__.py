@@ -43,17 +43,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             import logging as _logging
 
             from .discovery import async_find_ip
+            from .night_store import async_get_night_store
 
-            local_ip = await async_find_ip(hass, serial)
+            _log = _logging.getLogger(__name__)
+            store = await async_get_night_store(hass)
+            # Use the last-known IP if we have one (fast startup - no scan). It
+            # self-heals: if the light moved, the client re-scans on first failure
+            # and caches the new IP. Only scan here when there's nothing cached.
+            local_ip = store.get_ip(serial)
             if local_ip:
-                _logging.getLogger(__name__).info(
-                    "AIPAI %s: local control at %s", serial, local_ip
-                )
+                _log.info("AIPAI %s: local control at %s (cached)", serial, local_ip)
             else:
-                _logging.getLogger(__name__).warning(
-                    "AIPAI %s: local control is on but the light wasn't found on "
-                    "the network - falling back to cloud for now.", serial
-                )
+                local_ip = await async_find_ip(hass, serial)
+                if local_ip:
+                    await store.async_set_ip(serial, local_ip)
+                    _log.info("AIPAI %s: local control at %s (found)", serial, local_ip)
+                else:
+                    _log.warning(
+                        "AIPAI %s: local control is on but the light wasn't found on "
+                        "the network - falling back to cloud for now.", serial
+                    )
         hub: AipaiLightHub | ExperimentalDeviceHub = AipaiLightHub(
             hass, serial, model_hint=entry.data.get(CONF_MODEL) or None,
             poll_interval=poll, name=entry.data.get(CONF_NAME) or None,
