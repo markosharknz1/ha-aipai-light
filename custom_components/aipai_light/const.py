@@ -24,8 +24,12 @@ CONF_POLL_INTERVAL = "poll_interval"
 CONF_NAME = "name"
 CONF_SUBNET = "subnet"
 CONF_LOCAL_CONTROL = "local_control"
+CONF_NIGHT_FEED_LEVEL = "night_feed_level"
+CONF_NIGHT_FEED_CHANNELS = "night_feed_channels"
 
 DEFAULT_POLL_INTERVAL = 45  # seconds
+# Night-feeding default: a dim red so corals stay closed but you can see the tank.
+DEFAULT_NIGHT_FEED_LEVEL = 25  # percent
 
 # Verified device type (has real hardware behind it).
 DEVICE_TYPE_LIGHT = "light"

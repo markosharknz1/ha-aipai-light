@@ -19,14 +19,19 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 
+from homeassistant.helpers import config_validation as cv
+
 from .const import (
     CONF_DEVICE_TYPE,
     CONF_LOCAL_CONTROL,
     CONF_MODEL,
     CONF_NAME,
+    CONF_NIGHT_FEED_CHANNELS,
+    CONF_NIGHT_FEED_LEVEL,
     CONF_POLL_INTERVAL,
     CONF_SERIAL,
     CONF_SUBNET,
+    DEFAULT_NIGHT_FEED_LEVEL,
     DEFAULT_POLL_INTERVAL,
     DEVICE_TYPE_LIGHT,
     DOMAIN,
@@ -196,4 +201,25 @@ class AipaiOptionsFlow(config_entries.OptionsFlow):
             fields[vol.Optional(
                 CONF_LOCAL_CONTROL, default=opts.get(CONF_LOCAL_CONTROL, False)
             )] = bool
+
+            # Night-feeding: level, and which channels count as "red". Offer the
+            # fixture's own channel labels when the hub is live so the choice is
+            # meaningful; default to the model's red channel(s).
+            fields[vol.Optional(
+                CONF_NIGHT_FEED_LEVEL,
+                default=opts.get(CONF_NIGHT_FEED_LEVEL, DEFAULT_NIGHT_FEED_LEVEL),
+            )] = vol.All(vol.Coerce(int), vol.Range(min=1, max=100))
+
+            hub = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
+            labels = list(getattr(hub, "labels", []))[: getattr(hub, "roads", 0)] if hub else []
+            if labels:
+                # String keys: the frontend returns selections as strings, so int
+                # keys would fail validation on save. The hub coerces back to int.
+                choices = {str(i): lab for i, lab in enumerate(labels)}
+                stored = opts.get(CONF_NIGHT_FEED_CHANNELS)
+                default_chans = stored if stored is not None else hub.red_channels()
+                fields[vol.Optional(
+                    CONF_NIGHT_FEED_CHANNELS,
+                    default=[str(c) for c in default_chans if str(c) in choices],
+                )] = cv.multi_select(choices)
         return self.async_show_form(step_id="init", data_schema=vol.Schema(fields))

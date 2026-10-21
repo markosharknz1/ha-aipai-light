@@ -94,6 +94,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         hub.attach_night_store(await async_get_night_store(hass))
 
+        # Re-adopt an active night-feeding (manual red look) across a restart, so
+        # the switch state is right and turning it off restores the prior look.
+        from .nf_store import async_get_nf_store
+
+        nf_store = await async_get_nf_store(hass)
+        hub.attach_nf_store(nf_store)
+        nf_pending = nf_store.get(serial)
+        if nf_pending:
+            await hub.async_restore_night_feed(nf_pending)
+
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

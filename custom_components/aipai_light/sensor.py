@@ -16,7 +16,6 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory, UnitOfTemperature
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -102,15 +101,14 @@ class AipaiScheduleSensor(SensorEntity):
 
     def _friendly_name(self) -> str:
         """The device's effective name, so the card shows what the user renamed it
-        to - whether that was set in the config flow or the HA device page."""
-        try:
-            device = dr.async_get(self.hass).async_get_device(
-                identifiers={(DOMAIN, self._hub.serial)}
-            )
-            if device:
-                return device.name_by_user or device.name or self._hub.name
-        except Exception:  # noqa: BLE001
-            pass
+        to - whether that was set in the config flow or the HA device page.
+
+        Uses the entity's own linked device (populated by the entity platform)
+        rather than a registry lookup - this avoids the deprecated
+        ``async_get_device(identifiers=...)`` call and works across HA versions."""
+        device = self.device_entry
+        if device:
+            return device.name_by_user or device.name or self._hub.name
         return self._hub.name
 
     def _night_attr(self) -> dict[str, Any]:

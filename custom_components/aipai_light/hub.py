@@ -45,6 +45,7 @@ class AipaiLightHub:
         self._clock_unsub = None
         self._last_offset: float | None = None   # UTC offset at the last clock sync
         self._last_clock_sync = 0.0              # monotonic time of the last sync
+        self._resync_on_state = False            # re-sync clock on next state after a reconnect
         self.last_ack: dict[str, Any] | None = None  # last saveconfig/clock/moon ack
 
         # Best-effort defaults until the first readconfig arrives.
@@ -71,6 +72,10 @@ class AipaiLightHub:
         self._off_unsub = None
         self._off_prev: tuple[str, list[int]] | None = None
         self.off_until = None
+        # Night-feeding override state (manual, red-only; schedule resumes on off).
+        self._nf_store = None
+        self._nf_active = False
+        self._nf_prev: tuple[str, list[int]] | None = None
         # Transport: local HTTP (cloud-free) when an IP is supplied, else the
         # vendor cloud broker. Both feed the same on_message/on_connection_change.
         self.local = bool(local_ip)
@@ -350,6 +355,98 @@ class AipaiLightHub:
         else:
             for i, pct in enumerate(prev_pct[: self.roads]):
                 self.set_channel(i, pct_to_cmd(pct))
+
+    # -- night feeding -----------------------------------------------------
+
+    def attach_nf_store(self, store) -> None:  # noqa: ANN001
+        self._nf_store = store
+
+    @property
+    def is_night_feeding(self) -> bool:
+        return self._nf_active
+
+    def red_channels(self) -> list[int]:
+        """Channel indices whose label looks like red - the night-feeding default."""
+        red = [i for i, lab in enumerate(self.labels) if "red" in str(lab).lower()]
+        return red
+
+    def _nf_vector(self, level: int, channels: list[int] | None) -> list[int]:
+        """A full-length road_val vector: `level` on the chosen channels, 0 elsewhere."""
+        chans = [int(c) for c in channels] if channels else self.red_channels()
+        lvl = max(1, min(100, int(level)))
+        vec = [0] * self.state.roads_real
+        for i in chans:
+            if 0 <= i < len(vec):
+                vec[i] = lvl
+        return vec
+
+    async def async_start_night_feeding(
+        self, level: int, channels: list[int] | None = None, *, persist: bool = True
+    ) -> bool:
+        """Drop the light into manual mode showing only a dim red (one saveconfig).
+
+        Remembers the mode and levels in force beforehand so turning the switch
+        off restores them. The schedule curve (road_data) is preserved verbatim,
+        so switching off simply resumes it.
+        """
+        if not self.has_state:
+            _LOGGER.warning("night feeding skipped for %s: no state read yet", self.serial)
+            return False
+
+        prev_mode = self.state.mode
+        prev_pct = list(self.state.road_val_pct)
+        self._nf_prev = (prev_mode, prev_pct)
+
+        vec = self._nf_vector(level, channels)
+        self.state.road_val_pct = vec
+        self.state.mode = "0"
+        _LOGGER.info("WRITE %s night feeding ON (manual, levels=%s)", self.serial, vec[: self.roads])
+        self.client.save_config(build_saveconfig(self.state))
+        # Reflect the live look so entities/card update immediately.
+        self.channels = [pct_to_cmd(vec[i]) for i in range(self.roads)]
+        self._nf_active = True
+        if persist and self._nf_store is not None:
+            await self._nf_store.async_set(self.serial, prev_mode, prev_pct)
+        self._notify()
+        return True
+
+    async def async_stop_night_feeding(self, *, persist: bool = True) -> bool:
+        """Restore the pre-feeding mode and levels (one saveconfig).
+
+        By default that means resuming the schedule; if the light was in manual
+        mode before feeding, its manual levels come back instead.
+        """
+        prev_mode, prev_pct = self._nf_prev or ("1", [])
+        if self.has_state:
+            self.state.mode = prev_mode
+            if prev_pct:
+                n = self.state.roads_real
+                self.state.road_val_pct = list(prev_pct) + [0] * (n - len(prev_pct))
+            _LOGGER.info("WRITE %s night feeding OFF -> mode %s", self.serial, prev_mode)
+            self.client.save_config(build_saveconfig(self.state))
+            self.channels = [
+                pct_to_cmd(self.state.road_val_pct[i]) for i in range(self.roads)
+            ]
+        self._nf_active = False
+        self._nf_prev = None
+        if persist and self._nf_store is not None:
+            await self._nf_store.async_clear(self.serial)
+        # Pull fresh state so a resumed schedule's live levels catch up promptly.
+        self.request_refresh()
+        self._notify()
+        return True
+
+    async def async_restore_night_feed(self, entry: dict) -> None:
+        """On startup, re-adopt a night-feeding that was active before the restart.
+
+        The device already holds the manual red look (it was saved to the light),
+        so nothing is written - we just remember what to restore and mark the
+        switch on so the user can turn it off cleanly.
+        """
+        self._nf_prev = (entry.get("prev_mode", "1"), entry.get("prev_pct", []))
+        self._nf_active = True
+        _LOGGER.info("Re-adopted active night feeding for %s", self.serial)
+        self._notify()
 
     # -- time / schedule / moon -------------------------------------------
 
@@ -668,9 +765,16 @@ class AipaiLightHub:
     # -- MQTT thread callbacks --------------------------------------------
 
     def _handle_connection_change(self, connected: bool) -> None:
+        was_connected = self._connected
         self._connected = connected
         self.hass.loop.call_soon_threadsafe(self._notify)
         if connected:
+            # A light that just came back (e.g. after a power blip) has no
+            # battery-backed clock, so it may return with the wrong time. Re-sync
+            # once fresh state (and thus its timezone) has arrived. The very first
+            # connect is handled by the `first` readconfig path instead.
+            if not was_connected and self.has_state:
+                self._resync_on_state = True
             self.hass.loop.call_soon_threadsafe(self.request_refresh)
 
     def _handle_message(self, payload: dict[str, Any]) -> None:
@@ -698,6 +802,12 @@ class AipaiLightHub:
             self._notify()
             if first:
                 # We now know the device's timezone: sync its clock immediately.
+                self.auto_sync_clock()
+            elif self._resync_on_state:
+                # The light just reconnected (e.g. after losing power). Its clock
+                # may have reset, so correct it now that its timezone is known.
+                self._resync_on_state = False
+                _LOGGER.info("%s reconnected - re-syncing clock", self.serial)
                 self.auto_sync_clock()
         elif msg_type == "online":
             self._notify()
