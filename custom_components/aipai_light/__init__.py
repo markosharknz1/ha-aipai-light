@@ -26,7 +26,7 @@ from .hub import AipaiLightHub
 
 # All platforms are forwarded; each platform decides what (if anything) to
 # create for the hub type behind this entry.
-PLATFORMS = ["switch", "sensor", "number", "select", "button"]
+PLATFORMS = ["switch", "sensor", "binary_sensor", "number", "select", "button"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
