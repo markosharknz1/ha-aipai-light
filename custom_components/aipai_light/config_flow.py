@@ -22,6 +22,8 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
+    CONF_ACCLIM_START,
+    CONF_ACCLIM_WEEKS,
     CONF_DEVICE_TYPE,
     CONF_DROPOUT_DEBOUNCE,
     CONF_LOCAL_CONTROL,
@@ -32,6 +34,8 @@ from .const import (
     CONF_POLL_INTERVAL,
     CONF_SERIAL,
     CONF_SUBNET,
+    DEFAULT_ACCLIM_START,
+    DEFAULT_ACCLIM_WEEKS,
     DEFAULT_DROPOUT_DEBOUNCE,
     DEFAULT_NIGHT_FEED_LEVEL,
     DEFAULT_POLL_INTERVAL,
@@ -218,6 +222,17 @@ class AipaiOptionsFlow(config_entries.OptionsFlow):
                 CONF_DROPOUT_DEBOUNCE,
                 default=opts.get(CONF_DROPOUT_DEBOUNCE, DEFAULT_DROPOUT_DEBOUNCE),
             )] = vol.All(vol.Coerce(int), vol.Range(min=0, max=3600))
+
+            # Acclimation ramp: the start level and how long it climbs to 100%.
+            # Read when the Acclimation switch is turned on.
+            fields[vol.Optional(
+                CONF_ACCLIM_START,
+                default=opts.get(CONF_ACCLIM_START, DEFAULT_ACCLIM_START),
+            )] = vol.All(vol.Coerce(int), vol.Range(min=1, max=100))
+            fields[vol.Optional(
+                CONF_ACCLIM_WEEKS,
+                default=opts.get(CONF_ACCLIM_WEEKS, DEFAULT_ACCLIM_WEEKS),
+            )] = vol.All(vol.Coerce(int), vol.Range(min=1, max=26))
 
             hub = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
             labels = list(getattr(hub, "labels", []))[: getattr(hub, "roads", 0)] if hub else []

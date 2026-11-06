@@ -95,7 +95,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         from .night_store import async_get_night_store
 
-        hub.attach_night_store(await async_get_night_store(hass))
+        night_store = await async_get_night_store(hass)
+        hub.attach_night_store(night_store)
+
+        # Re-adopt an in-progress acclimation ramp across a restart.
+        acclim_pending = night_store.get_acclim(serial)
+        if acclim_pending:
+            await hub.async_restore_acclimation(acclim_pending)
 
         # Re-adopt an active night-feeding (manual red look) across a restart, so
         # the switch state is right and turning it off restores the prior look.

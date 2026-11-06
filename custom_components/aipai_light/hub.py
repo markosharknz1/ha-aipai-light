@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.event import (
     async_track_point_in_time,
+    async_track_time_change,
     async_track_time_interval,
 )
 from homeassistant.util import dt as dt_util
@@ -76,6 +77,10 @@ class AipaiLightHub:
         self.day_curves: list[list[int]] | None = None
         self.night_config: dict[str, Any] | None = None
         self._night_store = None
+        # Acclimation ramp: {"started": iso-date, "start_pct": int, "weeks": int}
+        # or None. Scales the whole composed schedule, climbing to 100% daily.
+        self.acclim: dict[str, Any] | None = None
+        self._acclim_unsub = None
         # Timed lights-off state.
         self._off_store = None
         self._off_unsub = None
@@ -124,6 +129,7 @@ class AipaiLightHub:
                 unsub()
         self._poll_unsub = self._clock_unsub = self._off_unsub = None
         self._cancel_dropout_timer()
+        self._cancel_acclim_timer()
         await self.hass.async_add_executor_job(self.client.disconnect)
 
     async def _async_clock_tick(self, _now) -> None:  # noqa: ANN001
@@ -660,16 +666,149 @@ class AipaiLightHub:
         return rows
 
     def _compose(self, day: list[list[int]]) -> list[list[int]]:
-        """Full device curves = the day layer with the night light laid over it."""
-        from .schedule import overlay_night
+        """Full device curves = day + night light, then the acclimation ramp
+        dims the whole thing uniformly (1.0 when no ramp is active)."""
+        from .schedule import overlay_night, scale_curves
 
         cfg = self.night_config
         if cfg and cfg.get("enable"):
-            return overlay_night(
+            composed = overlay_night(
                 day, cfg["start_hour"], cfg["end_hour"],
                 cfg["channels"], cfg["level"], True,
             )
-        return [list(c) for c in day]
+        else:
+            composed = [list(c) for c in day]
+        return scale_curves(composed, self.acclimation_factor())
+
+    # -- acclimation ramp --------------------------------------------------
+
+    def acclimation_factor(self) -> float:
+        """Current schedule multiplier (0..1): climbs from start% to 100% over
+        the configured weeks. 1.0 when no ramp is active."""
+        cfg = self.acclim
+        if not cfg:
+            return 1.0
+        from datetime import date
+
+        try:
+            started = date.fromisoformat(cfg["started"])
+        except (ValueError, KeyError, TypeError):
+            return 1.0
+        weeks = max(1, int(cfg.get("weeks", 4)))
+        start_pct = max(1, min(100, int(cfg.get("start_pct", 40))))
+        total_days = weeks * 7
+        elapsed = (dt_util.now().date() - started).days
+        progress = max(0.0, min(1.0, elapsed / total_days)) if total_days else 1.0
+        frac = start_pct / 100.0 + progress * (1.0 - start_pct / 100.0)
+        return max(0.0, min(1.0, frac))
+
+    @property
+    def is_acclimating(self) -> bool:
+        return self.acclim is not None
+
+    def acclimation_percent(self) -> int:
+        return round(self.acclimation_factor() * 100)
+
+    def acclimation_days_remaining(self) -> int:
+        cfg = self.acclim
+        if not cfg:
+            return 0
+        from datetime import date
+
+        try:
+            started = date.fromisoformat(cfg["started"])
+        except (ValueError, KeyError, TypeError):
+            return 0
+        total = max(1, int(cfg.get("weeks", 4))) * 7
+        return max(0, total - (dt_util.now().date() - started).days)
+
+    def _republish_schedule(self) -> None:
+        """Re-write the device curves for the current acclimation factor, without
+        disturbing a timed-off, a night-feed, or a manual look (schedule only)."""
+        if not self.has_state:
+            return
+        if self.off_until or self._nf_active or self.state.mode != "1":
+            return
+        from .schedule import curve_to_csv
+
+        rows = [curve_to_csv(c) for c in self._compose(self._day_base())]
+        self.apply_schedule(road_data=rows)  # mode unchanged
+
+    async def async_start_acclimation(self, start_pct: int, weeks: int) -> bool:
+        self.acclim = {
+            "started": dt_util.now().date().isoformat(),
+            "start_pct": max(1, min(100, int(start_pct))),
+            "weeks": max(1, int(weeks)),
+        }
+        _LOGGER.info("Acclimation started for %s: %d%% -> 100%% over %d weeks",
+                     self.serial, self.acclim["start_pct"], self.acclim["weeks"])
+        if self._night_store is not None:
+            await self._night_store.async_set_acclim(self.serial, self.acclim)
+        self._start_acclim_timer()
+        self._republish_schedule()
+        self._notify()
+        return True
+
+    async def async_stop_acclimation(self, *, completed: bool = False) -> bool:
+        if self.acclim is None:
+            return False
+        self.acclim = None
+        self._cancel_acclim_timer()
+        if self._night_store is not None:
+            await self._night_store.async_clear_acclim(self.serial)
+        _LOGGER.info("Acclimation %s for %s - back to full schedule",
+                     "completed" if completed else "stopped", self.serial)
+        self._republish_schedule()  # factor is now 1.0 -> full brightness
+        self._notify()
+        return True
+
+    async def async_restore_acclimation(self, cfg: dict[str, Any]) -> None:
+        """Re-adopt an in-progress ramp after a restart. The catch-up write
+        happens on the first readconfig, once device state is known."""
+        self.acclim = dict(cfg)
+        self._start_acclim_timer()
+
+    def _start_acclim_timer(self) -> None:
+        if self._acclim_unsub is None:
+            self._acclim_unsub = async_track_time_change(
+                self.hass, self._async_acclim_daily, hour=0, minute=5, second=0
+            )
+
+    def _cancel_acclim_timer(self) -> None:
+        if self._acclim_unsub is not None:
+            self._acclim_unsub()
+            self._acclim_unsub = None
+
+    @callback
+    def _async_acclim_daily(self, _now) -> None:  # noqa: ANN001
+        if not self.acclim:
+            return
+        if self.acclimation_factor() >= 1.0:
+            self.hass.async_create_task(self.async_stop_acclimation(completed=True))
+        else:
+            self._republish_schedule()
+            self._notify()
+
+    def apply_scene(self, levels_pct: list[int]) -> bool:
+        """Show a fixed per-channel look now (manual mode, one saveconfig).
+
+        A utility scene (e.g. all-white for maintenance). One-way by design -
+        resume the schedule from the Control mode select when you're done. The
+        atomic manual write is the same reliable path the night-feed look uses.
+        """
+        if not self.has_state:
+            _LOGGER.warning("apply_scene skipped for %s: no state read yet", self.serial)
+            return False
+        n = self.state.roads_real
+        vec = [max(0, min(100, int(v))) for v in levels_pct][:n]
+        vec += [0] * (n - len(vec))
+        self.state.road_val_pct = vec
+        self.state.mode = "0"
+        _LOGGER.info("WRITE %s apply_scene (manual) levels=%s", self.serial, vec[: self.roads])
+        self.client.save_config(build_saveconfig(self.state))
+        self.channels = [pct_to_cmd(vec[i]) for i in range(self.roads)]
+        self._notify()
+        return True
 
     def blue_channels(self) -> list[int]:
         """Channel indices whose label looks like blue - the moonlight default."""
@@ -814,6 +953,9 @@ class AipaiLightHub:
             if first:
                 # We now know the device's timezone: sync its clock immediately.
                 self.auto_sync_clock()
+                # Catch the acclimation ramp up to today's level after a restart.
+                if self.acclim is not None:
+                    self._republish_schedule()
             elif self._resync_on_state:
                 # The light just reconnected (e.g. after losing power). Its clock
                 # may have reset, so correct it now that its timezone is known.

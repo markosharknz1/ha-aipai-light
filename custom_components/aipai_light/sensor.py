@@ -35,6 +35,7 @@ async def async_setup_entry(
             AipaiTemperatureSensor(hub),
             AipaiScheduleSensor(hub),
             AipaiReliabilitySensor(hub),
+            AipaiAcclimationSensor(hub),
         ])
         hub.request_refresh()
     elif isinstance(hub, ExperimentalDeviceHub):
@@ -138,6 +139,51 @@ class AipaiReliabilitySensor(RestoreEntity, SensorEntity):
         last = await self.async_get_last_state()
         if last is not None:
             self._hub.dropouts.seed(last.attributes, dt_util.parse_datetime)
+
+
+class AipaiAcclimationSensor(SensorEntity):
+    """Acclimation ramp status: the current schedule level %, or 'off'.
+
+    When a ramp is running, the state is the live scale % (what the whole
+    schedule is dimmed to right now) and the attributes carry how many days are
+    left and the ramp's start level / length.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_name = "Acclimation level"
+    _attr_icon = "mdi:trending-up"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, hub: AipaiLightHub) -> None:
+        self._hub = hub
+        self._attr_unique_id = f"{hub.serial}_acclimation_level"
+        self._attr_device_info = hub.device_info
+        hub.register_entity(self)
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def native_value(self) -> str:
+        if not self._hub.is_acclimating:
+            return "off"
+        return f"{self._hub.acclimation_percent()}%"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        cfg = self._hub.acclim
+        if not cfg:
+            return {"active": False}
+        return {
+            "active": True,
+            "level_pct": self._hub.acclimation_percent(),
+            "days_remaining": self._hub.acclimation_days_remaining(),
+            "start_pct": cfg.get("start_pct"),
+            "weeks": cfg.get("weeks"),
+            "started": cfg.get("started"),
+        }
 
 
 class AipaiScheduleSensor(SensorEntity):

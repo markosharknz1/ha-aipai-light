@@ -55,7 +55,9 @@
           "local_control": "Local control (talk to the light on your LAN, no vendor cloud)",
           "night_feed_level": "Night feeding brightness (%)",
           "night_feed_channels": "Night feeding channels (default: red)",
-          "dropout_debounce": "Dropout alert delay (seconds, 0 = immediate)"
+          "dropout_debounce": "Dropout alert delay (seconds, 0 = immediate)",
+          "acclim_start_pct": "Acclimation start level (%)",
+          "acclim_weeks": "Acclimation length (weeks to reach 100%)"
         }
       }
     }

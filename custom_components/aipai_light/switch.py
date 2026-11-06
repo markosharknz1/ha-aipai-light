@@ -15,8 +15,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
+    CONF_ACCLIM_START,
+    CONF_ACCLIM_WEEKS,
     CONF_NIGHT_FEED_CHANNELS,
     CONF_NIGHT_FEED_LEVEL,
+    DEFAULT_ACCLIM_START,
+    DEFAULT_ACCLIM_WEEKS,
     DEFAULT_NIGHT_FEED_LEVEL,
     DOMAIN,
 )
@@ -28,9 +32,11 @@ async def async_setup_entry(
 ) -> None:
     hub = hass.data[DOMAIN][entry.entry_id]
     if isinstance(hub, AipaiLightHub):
-        async_add_entities(
-            [AipaiMasterSwitch(hub), AipaiNightFeedingSwitch(hub, entry)]
-        )
+        async_add_entities([
+            AipaiMasterSwitch(hub),
+            AipaiNightFeedingSwitch(hub, entry),
+            AipaiAcclimationSwitch(hub, entry),
+        ])
         return
     from .experimental import ExperimentalDeviceHub
     from .experimental_entities import build_entities
@@ -102,3 +108,41 @@ class AipaiNightFeedingSwitch(SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self._hub.async_stop_night_feeding()
+
+
+class AipaiAcclimationSwitch(SwitchEntity):
+    """Acclimation ramp: dim the whole schedule and climb to 100% over weeks.
+
+    On: start the ramp from the configured start level, growing daily. Off:
+    jump straight back to the full schedule. Start level and length are set per
+    light under Configure.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_name = "Acclimation"
+    _attr_icon = "mdi:trending-up"
+
+    def __init__(self, hub: AipaiLightHub, entry: ConfigEntry) -> None:
+        self._hub = hub
+        self._entry = entry
+        self._attr_unique_id = f"{hub.serial}_acclimation"
+        self._attr_device_info = hub.device_info
+        hub.register_entity(self)
+
+    @property
+    def available(self) -> bool:
+        return self._hub.available
+
+    @property
+    def is_on(self) -> bool:
+        return self._hub.is_acclimating
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        opts = self._entry.options
+        start_pct = int(opts.get(CONF_ACCLIM_START, DEFAULT_ACCLIM_START))
+        weeks = int(opts.get(CONF_ACCLIM_WEEKS, DEFAULT_ACCLIM_WEEKS))
+        await self._hub.async_start_acclimation(start_pct, weeks)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self._hub.async_stop_acclimation()

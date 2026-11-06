@@ -161,6 +161,15 @@ def curve_to_csv(curve: list[int]) -> str:
     return ",".join(str(v) for v in curve)
 
 
+def scale_curves(curves: list[list[int]], factor: float) -> list[list[int]]:
+    """Multiply every point of every channel curve by ``factor`` (0..1), clamped
+    to 0..100. Used by the acclimation ramp to dim the whole schedule uniformly."""
+    if factor >= 1.0:
+        return [list(c) for c in curves]
+    f = max(0.0, factor)
+    return [[max(0, min(100, round(v * f))) for v in c] for c in curves]
+
+
 def clock_epoch(now: float, ha_offset_seconds: float, dev_offset_hours: int) -> int:
     """Epoch to send so the device shows Home Assistant's local time.
 

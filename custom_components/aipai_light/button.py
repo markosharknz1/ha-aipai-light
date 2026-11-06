@@ -17,9 +17,13 @@ async def async_setup_entry(
 ) -> None:
     hub = hass.data[DOMAIN][entry.entry_id]
     if isinstance(hub, AipaiLightHub):
-        async_add_entities(
-            [AipaiPersistButton(hub), AipaiRestartButton(hub), AipaiRefreshButton(hub)]
-        )
+        async_add_entities([
+            AipaiPersistButton(hub),
+            AipaiRestartButton(hub),
+            AipaiRefreshButton(hub),
+            AipaiMaintenanceSceneButton(hub),
+            AipaiViewingSceneButton(hub),
+        ])
         return
     from .experimental import ExperimentalDeviceHub
     from .experimental_entities import build_entities
@@ -79,6 +83,62 @@ class AipaiRefreshButton(_AipaiButtonBase):
 
     async def async_press(self) -> None:
         self._hub.request_refresh()
+
+
+class _AipaiSceneButton(ButtonEntity):
+    """Base for the user-facing scene buttons (shown on the dashboard, not under
+    diagnostics). Each sets a fixed look in manual mode; resume the schedule from
+    the Control mode select afterwards."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+
+    def __init__(self, hub: AipaiLightHub) -> None:
+        self._hub = hub
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, hub.serial)})
+        hub.register_entity(self)
+
+    @property
+    def available(self) -> bool:
+        return self._hub.available
+
+    def _levels(self) -> list[int]:
+        raise NotImplementedError
+
+    async def async_press(self) -> None:
+        self._hub.apply_scene(self._levels())
+
+
+class AipaiMaintenanceSceneButton(_AipaiSceneButton):
+    """All channels full - maximum visibility for tank maintenance."""
+
+    _attr_name = "Maintenance light"
+    _attr_icon = "mdi:wrench"
+
+    def __init__(self, hub: AipaiLightHub) -> None:
+        super().__init__(hub)
+        self._attr_unique_id = f"{hub.serial}_scene_maintenance"
+
+    def _levels(self) -> list[int]:
+        return [100] * self._hub.roads
+
+
+class AipaiViewingSceneButton(_AipaiSceneButton):
+    """A bright, spectrally balanced look for viewing / phone photos - derived
+    from the same channel weighting the schedule presets use, not a canned guess."""
+
+    _attr_name = "Viewing / photo"
+    _attr_icon = "mdi:camera"
+
+    def __init__(self, hub: AipaiLightHub) -> None:
+        super().__init__(hub)
+        self._attr_unique_id = f"{hub.serial}_scene_viewing"
+
+    def _levels(self) -> list[int]:
+        from .presets import channel_weight
+
+        labels = self._hub.labels[: self._hub.roads]
+        return [round(100 * channel_weight(lab)) for lab in labels]
 
 
 class ExpRefreshButton(ButtonEntity):
