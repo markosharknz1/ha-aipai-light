@@ -408,6 +408,7 @@ class AipaiReefCard extends HTMLElement {
             ? `<span class="chip" data-slot="${i}">${this._esc(n2)}</span>`
             : `<span class="chip empty" data-slot="${i}">Preset ${i + 1}</span>`).join("")}
           <span class="grow"></span>
+          ${this._ui.sheet || this._ui.editing ? `<span class="act cancel" data-act="cancel">✕ Cancel</span>` : ""}
           <span class="act" data-act="save">💾 Save preset</span>
         </div>
         ${this._sheet(points, labels, sel, moon, slots)}
@@ -642,6 +643,17 @@ class AipaiReefCard extends HTMLElement {
     else if (act === "share") { toggle("share"); this._ui.shareMsg = ""; }
     else if (act === "save") { toggle("save"); }
     else if (act === "clock") { this._call("sync_clock", {}); }
+    else if (act === "cancel") { this._onTopCancel(); return; }
+    this._render();
+  }
+
+  // Back out of whatever is open: put the lights back if a preview is showing,
+  // and close any sheet (schedule, night light, share, preset, save).
+  _onTopCancel() {
+    if (this._session || this._ui.editing) this._restoreSession();
+    this._draft = null;
+    this._ui.night = null; this._ui.sheet = null;
+    this._ui.presetEdit = false; this._ui.presetDraft = null;
     this._render();
   }
 
@@ -1033,6 +1045,7 @@ class AipaiReefCard extends HTMLElement {
         color: var(--secondary-text-color); font-style: italic; }
       .chip.mini { padding: 5px 10px; font-size: .75rem; }
       .act, .btn { cursor: pointer; color: var(--primary); font-size: .8rem; }
+      .act.cancel { margin-right: 14px; }
       .btn { font-size: .72rem; letter-spacing: .03em; }
       .ftr { display: flex; gap: 16px; flex-wrap: wrap; padding: 8px 0 4px;
         border-top: 1px solid var(--divider-color); margin-top: 6px; }
