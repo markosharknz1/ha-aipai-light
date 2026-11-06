@@ -26,10 +26,14 @@ CONF_SUBNET = "subnet"
 CONF_LOCAL_CONTROL = "local_control"
 CONF_NIGHT_FEED_LEVEL = "night_feed_level"
 CONF_NIGHT_FEED_CHANNELS = "night_feed_channels"
+CONF_DROPOUT_DEBOUNCE = "dropout_debounce"
 
 DEFAULT_POLL_INTERVAL = 45  # seconds
 # Night-feeding default: a dim red so corals stay closed but you can see the tank.
 DEFAULT_NIGHT_FEED_LEVEL = 25  # percent
+# How long a light must stay unreachable before a dropout alert fires (seconds).
+# A brief WiFi blip recovers inside this window and never alerts; 0 = alert at once.
+DEFAULT_DROPOUT_DEBOUNCE = 120
 
 # Verified device type (has real hardware behind it).
 DEVICE_TYPE_LIGHT = "light"

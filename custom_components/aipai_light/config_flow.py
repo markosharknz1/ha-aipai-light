@@ -23,6 +23,7 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import (
     CONF_DEVICE_TYPE,
+    CONF_DROPOUT_DEBOUNCE,
     CONF_LOCAL_CONTROL,
     CONF_MODEL,
     CONF_NAME,
@@ -31,6 +32,7 @@ from .const import (
     CONF_POLL_INTERVAL,
     CONF_SERIAL,
     CONF_SUBNET,
+    DEFAULT_DROPOUT_DEBOUNCE,
     DEFAULT_NIGHT_FEED_LEVEL,
     DEFAULT_POLL_INTERVAL,
     DEVICE_TYPE_LIGHT,
@@ -209,6 +211,13 @@ class AipaiOptionsFlow(config_entries.OptionsFlow):
                 CONF_NIGHT_FEED_LEVEL,
                 default=opts.get(CONF_NIGHT_FEED_LEVEL, DEFAULT_NIGHT_FEED_LEVEL),
             )] = vol.All(vol.Coerce(int), vol.Range(min=1, max=100))
+
+            # Dropout alert debounce (seconds): how long the light must stay
+            # unreachable before an alert fires. 0 = alert immediately.
+            fields[vol.Optional(
+                CONF_DROPOUT_DEBOUNCE,
+                default=opts.get(CONF_DROPOUT_DEBOUNCE, DEFAULT_DROPOUT_DEBOUNCE),
+            )] = vol.All(vol.Coerce(int), vol.Range(min=0, max=3600))
 
             hub = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
             labels = list(getattr(hub, "labels", []))[: getattr(hub, "roads", 0)] if hub else []

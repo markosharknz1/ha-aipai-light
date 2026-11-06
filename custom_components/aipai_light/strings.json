@@ -54,7 +54,8 @@
           "poll_interval": "State poll interval (seconds)",
           "local_control": "Local control (talk to the light on your LAN, no vendor cloud)",
           "night_feed_level": "Night feeding brightness (%)",
-          "night_feed_channels": "Night feeding channels (default: red)"
+          "night_feed_channels": "Night feeding channels (default: red)",
+          "dropout_debounce": "Dropout alert delay (seconds, 0 = immediate)"
         }
       }
     }

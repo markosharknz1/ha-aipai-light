@@ -31,7 +31,7 @@ class AipaiLightHub:
     def __init__(
         self, hass: HomeAssistant, serial: str, model_hint: str | None = None,
         poll_interval: int = POLL_INTERVAL, name: str | None = None,
-        local_ip: str | None = None,
+        local_ip: str | None = None, dropout_debounce: int = 120,
     ) -> None:
         self.hass = hass
         self.serial = serial
@@ -44,6 +44,12 @@ class AipaiLightHub:
         self.last_seen = None            # wall-clock (UTC) of the last device reply
         self._was_available: bool | None = None  # for dropout edge detection
         self._dropout_active = False     # a dropout notification is outstanding
+        # Reliability tracking + alert debounce (don't cry wolf on a brief blip).
+        from .dropout_tracker import DropoutTracker
+
+        self.dropouts = DropoutTracker()
+        self._dropout_debounce = max(0, int(dropout_debounce))  # seconds
+        self._dropout_timer = None       # pending debounced-announce handle
         self._poll_unsub = None
         self._clock_unsub = None
         self._last_offset: float | None = None   # UTC offset at the last clock sync
@@ -117,6 +123,7 @@ class AipaiLightHub:
             if unsub:
                 unsub()
         self._poll_unsub = self._clock_unsub = self._off_unsub = None
+        self._cancel_dropout_timer()
         await self.hass.async_add_executor_job(self.client.disconnect)
 
     async def _async_clock_tick(self, _now) -> None:  # noqa: ANN001
@@ -839,11 +846,14 @@ class AipaiLightHub:
             entity.async_write_ha_state()
 
     def _check_dropout_edge(self) -> None:
-        """Detect a drop/recover transition and fire an event + notification.
+        """Detect a drop/recover transition, feed the reliability tracker, and
+        fire a (debounced) event + notification.
 
         Driven off `available` (connected AND replying within grace), re-evaluated
         on every poll tick, reply and connection change. Only acts on an actual
         edge, so it never spams - the first evaluation just records the baseline.
+        The reliability tracker sees the real edge immediately; the user-facing
+        alert waits out a debounce window so a brief blip stays quiet.
         """
         now_available = self.available
         prev = self._was_available
@@ -854,36 +864,75 @@ class AipaiLightHub:
             return
         self._was_available = now_available
 
+        now = dt_util.utcnow()
+        if not now_available:
+            self.dropouts.record_offline(now)
+            self._schedule_dropout_announce()
+        else:
+            self.dropouts.record_online(now)
+            self._cancel_dropout_timer()
+            if self._dropout_active:
+                # Only announce recovery if a dropout was actually announced -
+                # avoids a spurious "reconnected" after a debounced blip or the
+                # first connect at startup.
+                self._dropout_active = False
+                self._announce_reconnected()
+
+    def _schedule_dropout_announce(self) -> None:
+        """Announce the dropout only after it has persisted for the debounce
+        window - a short blip (e.g. a WiFi hiccup) never raises an alert."""
+        self._cancel_dropout_timer()
+        if self._dropout_debounce <= 0:
+            self._announce_dropout()
+            return
+        from homeassistant.helpers.event import async_call_later
+
+        self._dropout_timer = async_call_later(
+            self.hass, self._dropout_debounce, self._on_dropout_timer
+        )
+
+    @callback
+    def _on_dropout_timer(self, _now) -> None:  # noqa: ANN001
+        self._dropout_timer = None
+        if not self.available:  # still down after the debounce window
+            self._announce_dropout()
+
+    def _cancel_dropout_timer(self) -> None:
+        if self._dropout_timer is not None:
+            self._dropout_timer()
+            self._dropout_timer = None
+
+    def _announce_dropout(self) -> None:
         from homeassistant.components import persistent_notification
 
-        notif_id = f"{DOMAIN}_dropout_{self.serial}"
-        if not now_available:
-            self._dropout_active = True
-            _LOGGER.warning("AIPAI %s (%s) dropped off the network", self.name, self.serial)
-            self.hass.bus.async_fire(
-                f"{DOMAIN}_dropout",
-                {
-                    "serial": self.serial,
-                    "name": self.name,
-                    "last_seen": self.last_seen.isoformat() if self.last_seen else None,
-                },
-            )
-            persistent_notification.async_create(
-                self.hass,
-                f"{self.name} (serial {self.serial}) has dropped off the network - "
-                "it stopped responding. Check its power and WiFi.",
-                title="Aquarium light offline",
-                notification_id=notif_id,
-            )
-        elif self._dropout_active:
-            # Only announce recovery if we actually reported a dropout - avoids a
-            # spurious "reconnected" on the first connect after startup.
-            self._dropout_active = False
-            _LOGGER.info("AIPAI %s (%s) is back online", self.name, self.serial)
-            self.hass.bus.async_fire(
-                f"{DOMAIN}_reconnected", {"serial": self.serial, "name": self.name}
-            )
-            persistent_notification.async_dismiss(self.hass, notif_id)
+        self._dropout_active = True
+        _LOGGER.warning("AIPAI %s (%s) dropped off the network", self.name, self.serial)
+        self.hass.bus.async_fire(
+            f"{DOMAIN}_dropout",
+            {
+                "serial": self.serial,
+                "name": self.name,
+                "last_seen": self.last_seen.isoformat() if self.last_seen else None,
+            },
+        )
+        persistent_notification.async_create(
+            self.hass,
+            f"{self.name} (serial {self.serial}) has dropped off the network - "
+            "it stopped responding. Check its power and WiFi.",
+            title="Aquarium light offline",
+            notification_id=f"{DOMAIN}_dropout_{self.serial}",
+        )
+
+    def _announce_reconnected(self) -> None:
+        from homeassistant.components import persistent_notification
+
+        _LOGGER.info("AIPAI %s (%s) is back online", self.name, self.serial)
+        self.hass.bus.async_fire(
+            f"{DOMAIN}_reconnected", {"serial": self.serial, "name": self.name}
+        )
+        persistent_notification.async_dismiss(
+            self.hass, f"{DOMAIN}_dropout_{self.serial}"
+        )
 
 
 def _road_code(index: int) -> str:

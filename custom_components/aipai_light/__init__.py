@@ -12,11 +12,13 @@ from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import (
     CONF_DEVICE_TYPE,
+    CONF_DROPOUT_DEBOUNCE,
     CONF_LOCAL_CONTROL,
     CONF_MODEL,
     CONF_NAME,
     CONF_POLL_INTERVAL,
     CONF_SERIAL,
+    DEFAULT_DROPOUT_DEBOUNCE,
     DEFAULT_POLL_INTERVAL,
     DEVICE_TYPE_LIGHT,
     DOMAIN,
@@ -33,6 +35,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     serial = entry.data[CONF_SERIAL]
     device_type = entry.data.get(CONF_DEVICE_TYPE, DEVICE_TYPE_LIGHT)
     poll = entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
+    debounce = entry.options.get(CONF_DROPOUT_DEBOUNCE, DEFAULT_DROPOUT_DEBOUNCE)
 
     if device_type == DEVICE_TYPE_LIGHT:
         # Local (cloud-free) control: if enabled, find the light's LAN IP by
@@ -66,7 +69,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hub: AipaiLightHub | ExperimentalDeviceHub = AipaiLightHub(
             hass, serial, model_hint=entry.data.get(CONF_MODEL) or None,
             poll_interval=poll, name=entry.data.get(CONF_NAME) or None,
-            local_ip=local_ip,
+            local_ip=local_ip, dropout_debounce=debounce,
         )
     else:
         hub = ExperimentalDeviceHub(hass, serial, device_type, poll_interval=poll)

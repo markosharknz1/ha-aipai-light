@@ -17,6 +17,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .experimental import ExperimentalDeviceHub
@@ -29,7 +31,11 @@ async def async_setup_entry(
 ) -> None:
     hub = hass.data[DOMAIN][entry.entry_id]
     if isinstance(hub, AipaiLightHub):
-        async_add_entities([AipaiTemperatureSensor(hub), AipaiScheduleSensor(hub)])
+        async_add_entities([
+            AipaiTemperatureSensor(hub),
+            AipaiScheduleSensor(hub),
+            AipaiReliabilitySensor(hub),
+        ])
         hub.request_refresh()
     elif isinstance(hub, ExperimentalDeviceHub):
         async_add_entities(build_entities(hub, "sensor"))
@@ -74,6 +80,64 @@ class AipaiTemperatureSensor(SensorEntity):
     @property
     def native_value(self) -> float | None:
         return self._hub.state.temperature
+
+
+_DAY_S = 86400
+_WEEK_S = 7 * 86400
+
+
+class AipaiReliabilitySensor(RestoreEntity, SensorEntity):
+    """Rolling uptime % for a light, plus outage stats - the useful read on a
+    flaky light ("drops every night" vs "blips when the AP reboots").
+
+    Always available so it keeps reporting while the light is offline. State is
+    24h uptime %; 7-day uptime, outage counts and the recent-outage log live in
+    attributes. The outage history is persisted across restarts via those
+    attributes and seeded back into the hub's tracker on startup.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_name = "Reliability (24h uptime)"
+    _attr_icon = "mdi:check-network-outline"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "%"
+
+    def __init__(self, hub: AipaiLightHub) -> None:
+        self._hub = hub
+        self._attr_unique_id = f"{hub.serial}_reliability"
+        self._attr_device_info = hub.device_info
+        hub.register_entity(self)
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def native_value(self) -> float:
+        return self._hub.dropouts.uptime_pct(dt_util.utcnow(), _DAY_S)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        tracker = self._hub.dropouts
+        now = dt_util.utcnow()
+        attrs = dict(tracker.as_attributes())
+        attrs.update(
+            {
+                "uptime_7d_pct": tracker.uptime_pct(now, _WEEK_S),
+                "outages_24h": tracker.outages_in_window(now, _DAY_S),
+                "outages_total": tracker.count,
+                "longest_outage_s": tracker.longest_outage_s(),
+            }
+        )
+        return attrs
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is not None:
+            self._hub.dropouts.seed(last.attributes, dt_util.parse_datetime)
 
 
 class AipaiScheduleSensor(SensorEntity):
