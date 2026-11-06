@@ -23,6 +23,7 @@ async def async_setup_entry(
             AipaiRefreshButton(hub),
             AipaiMaintenanceSceneButton(hub),
             AipaiViewingSceneButton(hub),
+            AipaiStormButton(hub),
         ])
         return
     from .experimental import ExperimentalDeviceHub
@@ -139,6 +140,26 @@ class AipaiViewingSceneButton(_AipaiSceneButton):
 
         labels = self._hub.labels[: self._hub.roads]
         return [round(100 * channel_weight(lab)) for lab in labels]
+
+
+class AipaiStormButton(_AipaiSceneButton):
+    """Run a brief lightning storm now, then resume the schedule."""
+
+    _attr_name = "Lightning storm"
+    _attr_icon = "mdi:weather-lightning"
+
+    def __init__(self, hub: AipaiLightHub) -> None:
+        super().__init__(hub)
+        self._attr_unique_id = f"{hub.serial}_storm"
+
+    def _levels(self) -> list[int]:  # unused; async_press is overridden
+        return []
+
+    async def async_press(self) -> None:
+        # Background task: the storm runs for ~20s and must not block the press.
+        self._hub.hass.async_create_background_task(
+            self._hub.async_run_storm(), name=f"aipai_storm_{self._hub.serial}"
+        )
 
 
 class ExpRefreshButton(ButtonEntity):

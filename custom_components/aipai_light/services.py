@@ -47,6 +47,7 @@ SERVICE_EXPORT_CONFIG = "export_config"
 SERVICE_IMPORT_CONFIG = "import_config"
 SERVICE_LIGHTS_OFF = "lights_off"
 SERVICE_CANCEL_LIGHTS_OFF = "cancel_lights_off"
+SERVICE_STORM = "storm"
 
 _SERIAL = vol.Optional("serial")
 # A serial may be one value, a list of values, or omitted (= all lights).
@@ -134,6 +135,11 @@ _LIGHTS_OFF_SCHEMA = vol.Schema({
     vol.Exclusive("until", "when"): cv.string,   # "HH:MM" local time
 })
 _CANCEL_OFF_SCHEMA = vol.Schema({_SERIAL: _SERIAL_VALUE})
+
+_STORM_SCHEMA = vol.Schema({
+    _SERIAL: _SERIAL_VALUE,
+    vol.Optional("duration"): vol.All(vol.Coerce(int), vol.Range(min=2, max=300)),
+})
 
 _SLOT = vol.All(vol.Coerce(int), vol.Range(min=1, max=3))   # 1-based for humans
 
@@ -563,6 +569,14 @@ def async_register_services(hass: HomeAssistant) -> None:
         for hub in _light_hubs(hass, call.data.get("serial")):
             await hub.async_cancel_off(revert=True)
 
+    async def handle_storm(call: ServiceCall) -> None:
+        duration = int(call.data.get("duration", 20))
+        for hub in _light_hubs(hass, call.data.get("serial")):
+            hass.async_create_background_task(
+                hub.async_run_storm(duration), name=f"aipai_storm_{hub.serial}"
+            )
+
+    hass.services.async_register(DOMAIN, SERVICE_STORM, handle_storm, _STORM_SCHEMA)
     hass.services.async_register(
         DOMAIN, SERVICE_LIGHTS_OFF, handle_lights_off, _LIGHTS_OFF_SCHEMA)
     hass.services.async_register(

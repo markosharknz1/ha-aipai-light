@@ -513,3 +513,25 @@ cancel_lights_off:
       example: "12345678"
       selector:
         text:
+
+storm:
+  name: Lightning storm
+  description: >-
+    Run a brief lightning storm (flickering the white/blue channels) over the
+    current scheduled look, then resume the schedule. Great for triggering when
+    it actually storms outside. Occasional use by design.
+  fields:
+    serial:
+      name: Serial
+      description: One serial, a list of serials, or omit for every light.
+      example: "12345678"
+      selector:
+        text:
+    duration:
+      name: Duration (seconds)
+      description: How long the storm runs. Defaults to 20 seconds.
+      selector:
+        number:
+          min: 2
+          max: 300
+          unit_of_measurement: s

@@ -81,6 +81,7 @@ class AipaiLightHub:
         # or None. Scales the whole composed schedule, climbing to 100% daily.
         self.acclim: dict[str, Any] | None = None
         self._acclim_unsub = None
+        self._storm_active = False        # a lightning storm effect is running
         # Timed lights-off state.
         self._off_store = None
         self._off_unsub = None
@@ -817,6 +818,71 @@ class AipaiLightHub:
             return blue
         # No blue label (unusual): fall back to channel 2 (index 1), the usual blue.
         return [1] if self.roads > 1 else [0]
+
+    def white_channels(self) -> list[int]:
+        """Channel indices whose label looks like white (the storm flash, with blue)."""
+        return [i for i, lab in enumerate(self.labels) if "white" in str(lab).lower()]
+
+    # -- storm / lightning effect -----------------------------------------
+
+    async def async_run_storm(self, duration_s: int = 20) -> bool:
+        """Run a lightning storm for ``duration_s`` seconds, then resume the
+        schedule.
+
+        The device overrides live writes while its schedule runs, so the effect
+        briefly takes the light into manual mode at the *current* scheduled
+        brightness (no visible jump), flickers the white+blue channels on top,
+        and always restores scheduled mode in a finally - a crash can't strand
+        the tank in manual. Occasional use by design (each run is two saveconfigs).
+        """
+        import asyncio
+        import random
+
+        if self._storm_active or not self.has_state:
+            return False
+        if self._nf_active or self.off_until:
+            _LOGGER.debug("storm skipped for %s: feed/timed-off active", self.serial)
+            return False
+
+        self._storm_active = True
+        prev_mode = self.state.mode or "1"
+        # Ambient = the schedule's current look, so entering manual doesn't jump.
+        composed = self._compose(self._day_base())
+        hour = dt_util.now().hour
+        ambient = [
+            composed[i][hour] if i < len(composed) and hour < len(composed[i]) else 0
+            for i in range(self.roads)
+        ]
+        flash = sorted(set(self.blue_channels()) | set(self.white_channels()))
+        if not flash:
+            flash = list(range(self.roads))
+        _LOGGER.info("Storm on %s for %ss (flash channels %s)", self.serial, duration_s, flash)
+        try:
+            # Enter manual at the ambient look (road_data/schedule untouched).
+            self.state.road_val_pct = list(ambient) + [0] * (self.state.roads_real - len(ambient))
+            self.state.mode = "0"
+            self.client.save_config(build_saveconfig(self.state))
+            await asyncio.sleep(0.6)  # let the mode change land before flashing
+
+            end = time.monotonic() + max(2, int(duration_s))
+            while time.monotonic() < end:
+                # One strike = a short burst of 1-3 quick flickers.
+                for _ in range(random.randint(1, 3)):
+                    for i in flash:
+                        self.client.set_channel(_road_code(i), pct_to_cmd(100))
+                    await asyncio.sleep(random.uniform(0.06, 0.16))
+                    for i in flash:
+                        self.client.set_channel(_road_code(i), pct_to_cmd(ambient[i]))
+                    await asyncio.sleep(random.uniform(0.05, 0.14))
+                # Quiet gap until the next strike.
+                await asyncio.sleep(random.uniform(0.8, 3.5))
+        finally:
+            self.state.mode = prev_mode
+            self.client.save_config(build_saveconfig(self.state))
+            self._storm_active = False
+            self._notify()
+            _LOGGER.info("Storm on %s finished - schedule resumed", self.serial)
+        return True
 
     # -- preview / save / discard -----------------------------------------
 
