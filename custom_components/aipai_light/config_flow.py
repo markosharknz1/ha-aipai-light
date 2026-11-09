@@ -26,6 +26,7 @@ from .const import (
     CONF_ACCLIM_WEEKS,
     CONF_DEVICE_TYPE,
     CONF_DROPOUT_DEBOUNCE,
+    CONF_MOON_FLOOR,
     CONF_LOCAL_CONTROL,
     CONF_MODEL,
     CONF_NAME,
@@ -37,6 +38,7 @@ from .const import (
     DEFAULT_ACCLIM_START,
     DEFAULT_ACCLIM_WEEKS,
     DEFAULT_DROPOUT_DEBOUNCE,
+    DEFAULT_MOON_FLOOR,
     DEFAULT_NIGHT_FEED_LEVEL,
     DEFAULT_POLL_INTERVAL,
     DEVICE_TYPE_LIGHT,
@@ -233,6 +235,13 @@ class AipaiOptionsFlow(config_entries.OptionsFlow):
                 CONF_ACCLIM_WEEKS,
                 default=opts.get(CONF_ACCLIM_WEEKS, DEFAULT_ACCLIM_WEEKS),
             )] = vol.All(vol.Coerce(int), vol.Range(min=1, max=26))
+
+            # Moon sync: the new-moon floor level (% of the night light). The
+            # night light's own level is the full-moon maximum.
+            fields[vol.Optional(
+                CONF_MOON_FLOOR,
+                default=opts.get(CONF_MOON_FLOOR, DEFAULT_MOON_FLOOR),
+            )] = vol.All(vol.Coerce(int), vol.Range(min=0, max=100))
 
             hub = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
             labels = list(getattr(hub, "labels", []))[: getattr(hub, "roads", 0)] if hub else []

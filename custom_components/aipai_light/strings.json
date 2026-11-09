@@ -57,7 +57,8 @@
           "night_feed_channels": "Night feeding channels (default: red)",
           "dropout_debounce": "Dropout alert delay (seconds, 0 = immediate)",
           "acclim_start_pct": "Acclimation start level (%)",
-          "acclim_weeks": "Acclimation length (weeks to reach 100%)"
+          "acclim_weeks": "Acclimation length (weeks to reach 100%)",
+          "moon_floor": "Moon sync new-moon floor (% of night light)"
         }
       }
     }

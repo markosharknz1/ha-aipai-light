@@ -80,8 +80,11 @@ class AipaiLightHub:
         # Acclimation ramp: {"started": iso-date, "start_pct": int, "weeks": int}
         # or None. Scales the whole composed schedule, climbing to 100% daily.
         self.acclim: dict[str, Any] | None = None
-        self._acclim_unsub = None
+        self._daily_unsub = None          # shared 00:05 tick (acclimation + moon sync)
         self._storm_active = False        # a lightning storm effect is running
+        # Moon sync: scale the simulated night light by tonight's lunar illumination.
+        self.moon_sync = False
+        self.moon_floor = 0               # new-moon level % (floor under the ramp)
         # Timed lights-off state.
         self._off_store = None
         self._off_unsub = None
@@ -130,7 +133,7 @@ class AipaiLightHub:
                 unsub()
         self._poll_unsub = self._clock_unsub = self._off_unsub = None
         self._cancel_dropout_timer()
-        self._cancel_acclim_timer()
+        self._cancel_daily_tick()
         await self.hass.async_add_executor_job(self.client.disconnect)
 
     async def _async_clock_tick(self, _now) -> None:  # noqa: ANN001
@@ -668,14 +671,21 @@ class AipaiLightHub:
 
     def _compose(self, day: list[list[int]]) -> list[list[int]]:
         """Full device curves = day + night light, then the acclimation ramp
-        dims the whole thing uniformly (1.0 when no ramp is active)."""
+        dims the whole thing uniformly (1.0 when no ramp is active).
+
+        When moon sync is on, the night light's level is replaced by tonight's
+        moon-scaled level (its configured level is the full-moon maximum), so the
+        blues track the lunar cycle while the day schedule is untouched."""
         from .schedule import overlay_night, scale_curves
 
         cfg = self.night_config
         if cfg and cfg.get("enable"):
+            level = cfg["level"]
+            if self.moon_sync:
+                level = self._moon_scaled_level(cfg["level"])
             composed = overlay_night(
                 day, cfg["start_hour"], cfg["end_hour"],
-                cfg["channels"], cfg["level"], True,
+                cfg["channels"], level, True,
             )
         else:
             composed = [list(c) for c in day]
@@ -745,7 +755,7 @@ class AipaiLightHub:
                      self.serial, self.acclim["start_pct"], self.acclim["weeks"])
         if self._night_store is not None:
             await self._night_store.async_set_acclim(self.serial, self.acclim)
-        self._start_acclim_timer()
+        self._start_daily_tick()
         self._republish_schedule()
         self._notify()
         return True
@@ -754,7 +764,7 @@ class AipaiLightHub:
         if self.acclim is None:
             return False
         self.acclim = None
-        self._cancel_acclim_timer()
+        self._maybe_cancel_daily_tick()
         if self._night_store is not None:
             await self._night_store.async_clear_acclim(self.serial)
         _LOGGER.info("Acclimation %s for %s - back to full schedule",
@@ -767,28 +777,103 @@ class AipaiLightHub:
         """Re-adopt an in-progress ramp after a restart. The catch-up write
         happens on the first readconfig, once device state is known."""
         self.acclim = dict(cfg)
-        self._start_acclim_timer()
+        self._start_daily_tick()
 
-    def _start_acclim_timer(self) -> None:
-        if self._acclim_unsub is None:
-            self._acclim_unsub = async_track_time_change(
-                self.hass, self._async_acclim_daily, hour=0, minute=5, second=0
+    def _start_daily_tick(self) -> None:
+        """One daily 00:05 tick, shared by the acclimation ramp and moon sync."""
+        if self._daily_unsub is None:
+            self._daily_unsub = async_track_time_change(
+                self.hass, self._async_daily, hour=0, minute=5, second=0
             )
 
-    def _cancel_acclim_timer(self) -> None:
-        if self._acclim_unsub is not None:
-            self._acclim_unsub()
-            self._acclim_unsub = None
+    def _cancel_daily_tick(self) -> None:
+        if self._daily_unsub is not None:
+            self._daily_unsub()
+            self._daily_unsub = None
+
+    def _maybe_cancel_daily_tick(self) -> None:
+        """Stop the shared tick only when neither feature still needs it."""
+        if self.acclim is None and not self.moon_sync:
+            self._cancel_daily_tick()
 
     @callback
-    def _async_acclim_daily(self, _now) -> None:  # noqa: ANN001
-        if not self.acclim:
-            return
-        if self.acclimation_factor() >= 1.0:
+    def _async_daily(self, _now) -> None:  # noqa: ANN001
+        # Acclimation complete: stop (its own republish restores full brightness).
+        if self.acclim and self.acclimation_factor() >= 1.0:
             self.hass.async_create_task(self.async_stop_acclimation(completed=True))
-        else:
+            return
+        # One republish covers both: _compose folds in today's acclim factor AND
+        # tonight's moon level.
+        if self.acclim or self.moon_sync:
             self._republish_schedule()
             self._notify()
+
+    # -- moon sync ---------------------------------------------------------
+
+    @property
+    def is_moon_sync(self) -> bool:
+        return self.moon_sync
+
+    def moon_illumination(self) -> float:
+        """Tonight's illuminated fraction of the moon, 0.0 (new) .. 1.0 (full)."""
+        import math
+
+        from astral import moon
+
+        phase = moon.phase(dt_util.now().date())  # 0..27.99 (0 new, 14 full)
+        return (1 - math.cos(2 * math.pi * phase / 28)) / 2
+
+    def moon_phase_name(self) -> str:
+        from astral import moon
+
+        p = moon.phase(dt_util.now().date())
+        names = [
+            (1.0, "New moon"), (6.0, "Waxing crescent"), (8.0, "First quarter"),
+            (13.0, "Waxing gibbous"), (15.0, "Full moon"), (20.0, "Waning gibbous"),
+            (22.0, "Last quarter"), (27.0, "Waning crescent"),
+        ]
+        for edge, name in names:
+            if p < edge:
+                return name
+        return "New moon"
+
+    def _moon_scaled_level(self, max_level: int) -> int:
+        """Tonight's night-light level: floor at new moon, max_level at full."""
+        floor = max(0, min(int(max_level), int(self.moon_floor)))
+        return floor + round(self.moon_illumination() * (int(max_level) - floor))
+
+    def moonlight_tonight(self) -> int | None:
+        """The blue level the night light will run at tonight, or None if moon
+        sync is off or no night light is configured."""
+        cfg = self.night_config
+        if not self.moon_sync or not (cfg and cfg.get("enable")):
+            return None
+        return self._moon_scaled_level(cfg["level"])
+
+    async def async_set_moon_sync(self, on: bool, floor: int | None = None) -> bool:
+        self.moon_sync = bool(on)
+        if floor is not None:
+            self.moon_floor = max(0, min(100, int(floor)))
+        _LOGGER.info("Moon sync %s for %s (floor %d%%)",
+                     "on" if on else "off", self.serial, self.moon_floor)
+        if self._night_store is not None:
+            await self._night_store.async_set_moon(
+                self.serial, {"sync": self.moon_sync, "floor": self.moon_floor}
+            )
+        if self.moon_sync:
+            self._start_daily_tick()
+        else:
+            self._maybe_cancel_daily_tick()
+        self._republish_schedule()  # apply (or clear) tonight's moon level now
+        self._notify()
+        return True
+
+    async def async_restore_moon(self, cfg: dict[str, Any]) -> None:
+        """Re-adopt moon sync after a restart; catch-up write is on first state."""
+        self.moon_sync = bool(cfg.get("sync"))
+        self.moon_floor = max(0, min(100, int(cfg.get("floor", 0))))
+        if self.moon_sync:
+            self._start_daily_tick()
 
     def apply_scene(self, levels_pct: list[int]) -> bool:
         """Show a fixed per-channel look now (manual mode, one saveconfig).
@@ -1019,8 +1104,8 @@ class AipaiLightHub:
             if first:
                 # We now know the device's timezone: sync its clock immediately.
                 self.auto_sync_clock()
-                # Catch the acclimation ramp up to today's level after a restart.
-                if self.acclim is not None:
+                # Catch the acclimation ramp / moon level up to today after a restart.
+                if self.acclim is not None or self.moon_sync:
                     self._republish_schedule()
             elif self._resync_on_state:
                 # The light just reconnected (e.g. after losing power). Its clock

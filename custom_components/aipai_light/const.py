@@ -29,6 +29,7 @@ CONF_NIGHT_FEED_CHANNELS = "night_feed_channels"
 CONF_DROPOUT_DEBOUNCE = "dropout_debounce"
 CONF_ACCLIM_START = "acclim_start_pct"
 CONF_ACCLIM_WEEKS = "acclim_weeks"
+CONF_MOON_FLOOR = "moon_floor"
 
 DEFAULT_POLL_INTERVAL = 45  # seconds
 # Night-feeding default: a dim red so corals stay closed but you can see the tank.
@@ -40,6 +41,8 @@ DEFAULT_DROPOUT_DEBOUNCE = 120
 # over this many weeks (protects new corals / a new tank from too much light).
 DEFAULT_ACCLIM_START = 40  # percent
 DEFAULT_ACCLIM_WEEKS = 4
+# Moon sync: the new-moon floor level (% of the night light) under the lunar ramp.
+DEFAULT_MOON_FLOOR = 0
 
 # Verified device type (has real hardware behind it).
 DEVICE_TYPE_LIGHT = "light"

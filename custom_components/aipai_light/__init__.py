@@ -103,6 +103,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if acclim_pending:
             await hub.async_restore_acclimation(acclim_pending)
 
+        # Re-adopt moon sync across a restart.
+        moon_pending = night_store.get_moon(serial)
+        if moon_pending and moon_pending.get("sync"):
+            await hub.async_restore_moon(moon_pending)
+
         # Re-adopt an active night-feeding (manual red look) across a restart, so
         # the switch state is right and turning it off restores the prior look.
         from .nf_store import async_get_nf_store

@@ -1283,3 +1283,117 @@ if (!window.customCards.some((c) => c.type === "aipai-reef-card")) {
 }
 
 console.info("%c AIPAI-REEF-CARD %c loaded ", "background:#03a9f4;color:#fff", "");
+
+/*
+ * AIPAI Moon card
+ * ---------------
+ * A compact lunar widget for a light's "Moonlight tonight" sensor: the phase
+ * glyph, illumination %, tonight's blue level, and (if a switch is given) a
+ * Moon sync toggle. Backed by the integration, which does the nightly maths.
+ *
+ * Config:
+ *   type: custom:aipai-moon-card
+ *   entity: sensor.display_moonlight_tonight   # the Moonlight sensor (required)
+ *   switch: switch.display_moon_sync           # optional: adds the sync toggle
+ *   name: Display moon                         # optional heading
+ */
+const MOON_GLYPH = {
+  "new moon": "🌑", "waxing crescent": "🌒", "first quarter": "🌓",
+  "waxing gibbous": "🌔", "full moon": "🌕", "waning gibbous": "🌖",
+  "last quarter": "🌗", "waning crescent": "🌘",
+};
+
+class AipaiMoonCard extends HTMLElement {
+  setConfig(config) {
+    if (!config || !config.entity) {
+      throw new Error("aipai-moon-card: 'entity' (the Moonlight sensor) is required");
+    }
+    this._config = config;
+    this._root = this._root || this.attachShadow({ mode: "open" });
+  }
+
+  getCardSize() { return 3; }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  _toggle() {
+    const sw = this._config.switch;
+    if (sw && this._hass) {
+      this._hass.callService("switch", "toggle", { entity_id: sw });
+    }
+  }
+
+  _render() {
+    if (!this._hass || !this._config) return;
+    const st = this._hass.states[this._config.entity];
+    const sw = this._config.switch ? this._hass.states[this._config.switch] : null;
+    const a = (st && st.attributes) || {};
+    const phase = (a.phase || "—");
+    const glyph = MOON_GLYPH[String(phase).toLowerCase()] || "🌙";
+    const illum = a.illumination_pct != null ? `${a.illumination_pct}%` : "—";
+    const synced = sw ? sw.state === "on" : !!a.moon_sync;
+    // tonight's level: the sensor state is the % when sync is on, else unknown.
+    const lvl = st && st.state != null && st.state !== "unknown" && st.state !== "unavailable"
+      ? `${st.state}%` : "—";
+
+    this._root.innerHTML = `
+      <style>
+        :host { display:block; }
+        .card {
+          background: linear-gradient(160deg,#10172b 0%,#1b2440 100%);
+          color:#e8ecff; border-radius:14px; padding:16px 18px;
+          font-family: var(--paper-font-body1_-_font-family, system-ui, sans-serif);
+          box-shadow: var(--ha-card-box-shadow, 0 2px 6px rgba(0,0,0,.3));
+        }
+        .top { display:flex; align-items:center; gap:14px; }
+        .glyph { font-size:46px; line-height:1; filter:drop-shadow(0 0 6px rgba(180,200,255,.35)); }
+        .head { flex:1; }
+        .name { font-size:13px; opacity:.7; }
+        .phase { font-size:19px; font-weight:600; }
+        .stats { display:flex; gap:22px; margin-top:14px; }
+        .stat .k { font-size:11px; text-transform:uppercase; letter-spacing:.04em; opacity:.6; }
+        .stat .v { font-size:20px; font-weight:600; }
+        .toggle { margin-top:14px; display:flex; align-items:center; justify-content:space-between;
+                  border-top:1px solid rgba(255,255,255,.1); padding-top:12px; }
+        button { cursor:pointer; border:0; border-radius:8px; padding:7px 14px; font-weight:600;
+                 background:${synced ? "#3a6df0" : "rgba(255,255,255,.14)"}; color:#fff; }
+        .muted { opacity:.6; font-size:12px; }
+      </style>
+      <div class="card">
+        <div class="top">
+          <div class="glyph">${glyph}</div>
+          <div class="head">
+            ${this._config.name ? `<div class="name">${this._config.name}</div>` : ""}
+            <div class="phase">${phase}</div>
+          </div>
+        </div>
+        <div class="stats">
+          <div class="stat"><div class="k">Illumination</div><div class="v">${illum}</div></div>
+          <div class="stat"><div class="k">Tonight's light</div><div class="v">${lvl}</div></div>
+        </div>
+        ${this._config.switch ? `
+          <div class="toggle">
+            <span class="muted">${synced ? "Moon sync on — blues track the moon" : "Moon sync off"}</span>
+            <button id="sync">${synced ? "On" : "Off"}</button>
+          </div>` : ""}
+      </div>`;
+    const btn = this._root.getElementById("sync");
+    if (btn) btn.onclick = () => this._toggle();
+  }
+}
+
+if (!customElements.get("aipai-moon-card")) {
+  customElements.define("aipai-moon-card", AipaiMoonCard);
+}
+window.customCards = window.customCards || [];
+if (!window.customCards.some((c) => c.type === "aipai-moon-card")) {
+  window.customCards.push({
+    type: "aipai-moon-card",
+    name: "AIPAI Moon",
+    description: "Lunar phase, illumination and tonight's moonlight for an AIPAI light.",
+    preview: false,
+  });
+}

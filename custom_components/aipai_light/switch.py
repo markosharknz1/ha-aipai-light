@@ -17,10 +17,12 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import (
     CONF_ACCLIM_START,
     CONF_ACCLIM_WEEKS,
+    CONF_MOON_FLOOR,
     CONF_NIGHT_FEED_CHANNELS,
     CONF_NIGHT_FEED_LEVEL,
     DEFAULT_ACCLIM_START,
     DEFAULT_ACCLIM_WEEKS,
+    DEFAULT_MOON_FLOOR,
     DEFAULT_NIGHT_FEED_LEVEL,
     DOMAIN,
 )
@@ -36,6 +38,7 @@ async def async_setup_entry(
             AipaiMasterSwitch(hub),
             AipaiNightFeedingSwitch(hub, entry),
             AipaiAcclimationSwitch(hub, entry),
+            AipaiMoonSyncSwitch(hub, entry),
         ])
         return
     from .experimental import ExperimentalDeviceHub
@@ -146,3 +149,39 @@ class AipaiAcclimationSwitch(SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self._hub.async_stop_acclimation()
+
+
+class AipaiMoonSyncSwitch(SwitchEntity):
+    """Moon sync: the simulated night light tracks tonight's lunar illumination.
+
+    Full moon = your configured night-light level; new moon = the floor (set per
+    light under Configure). Works on every model - it drives the schedule-based
+    night light, not the native moon timer the A7-S line lacks.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_name = "Moon sync"
+    _attr_icon = "mdi:moon-waning-crescent"
+
+    def __init__(self, hub: AipaiLightHub, entry: ConfigEntry) -> None:
+        self._hub = hub
+        self._entry = entry
+        self._attr_unique_id = f"{hub.serial}_moon_sync"
+        self._attr_device_info = hub.device_info
+        hub.register_entity(self)
+
+    @property
+    def available(self) -> bool:
+        return self._hub.available
+
+    @property
+    def is_on(self) -> bool:
+        return self._hub.is_moon_sync
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        floor = int(self._entry.options.get(CONF_MOON_FLOOR, DEFAULT_MOON_FLOOR))
+        await self._hub.async_set_moon_sync(True, floor)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self._hub.async_set_moon_sync(False)

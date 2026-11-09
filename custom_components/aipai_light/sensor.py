@@ -36,6 +36,7 @@ async def async_setup_entry(
             AipaiScheduleSensor(hub),
             AipaiReliabilitySensor(hub),
             AipaiAcclimationSensor(hub),
+            AipaiMoonlightSensor(hub),
         ])
         hub.request_refresh()
     elif isinstance(hub, ExperimentalDeviceHub):
@@ -183,6 +184,43 @@ class AipaiAcclimationSensor(SensorEntity):
             "start_pct": cfg.get("start_pct"),
             "weeks": cfg.get("weeks"),
             "started": cfg.get("started"),
+        }
+
+
+class AipaiMoonlightSensor(SensorEntity):
+    """Tonight's moonlight: the blue level the night light runs at when moon sync
+    is on (state), with the lunar phase and illumination % as attributes. Backs
+    the Moon card.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_name = "Moonlight tonight"
+    _attr_icon = "mdi:moon-waning-crescent"
+    _attr_native_unit_of_measurement = "%"
+
+    def __init__(self, hub: AipaiLightHub) -> None:
+        self._hub = hub
+        self._attr_unique_id = f"{hub.serial}_moonlight"
+        self._attr_device_info = hub.device_info
+        hub.register_entity(self)
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def native_value(self) -> float | None:
+        # The level the blues run at tonight; 0 when sync is on at new moon,
+        # None (unknown) when sync is off or no night light is set.
+        return self._hub.moonlight_tonight()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "moon_sync": self._hub.is_moon_sync,
+            "phase": self._hub.moon_phase_name(),
+            "illumination_pct": round(self._hub.moon_illumination() * 100),
         }
 
 

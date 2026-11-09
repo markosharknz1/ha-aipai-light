@@ -35,6 +35,7 @@ class NightStore:
         self._day: dict[str, list[list[int]]] = {}
         self._ip: dict[str, str] = {}   # last-known LAN IP per serial (local mode)
         self._acclim: dict[str, dict[str, Any]] = {}  # active acclimation ramp per serial
+        self._moon: dict[str, dict[str, Any]] = {}    # moon-sync {sync, floor} per serial
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
@@ -42,11 +43,12 @@ class NightStore:
         self._day = data.get("day", {})
         self._ip = data.get("ip", {})
         self._acclim = data.get("acclim", {})
+        self._moon = data.get("moon", {})
 
     async def _async_write(self) -> None:
         await self._store.async_save(
             {"night": self._night, "day": self._day, "ip": self._ip,
-             "acclim": self._acclim}
+             "acclim": self._acclim, "moon": self._moon}
         )
 
     def get_night(self, serial: str) -> dict[str, Any] | None:
@@ -77,6 +79,13 @@ class NightStore:
     async def async_clear_acclim(self, serial: str) -> None:
         if self._acclim.pop(str(serial), None) is not None:
             await self._async_write()
+
+    def get_moon(self, serial: str) -> dict[str, Any] | None:
+        return self._moon.get(str(serial))
+
+    async def async_set_moon(self, serial: str, config: dict[str, Any]) -> None:
+        self._moon[str(serial)] = dict(config)
+        await self._async_write()
 
     def get_ip(self, serial: str) -> str | None:
         return self._ip.get(str(serial))
